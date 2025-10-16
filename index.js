@@ -5,12 +5,12 @@ import axios from "axios";
 const app = express();
 app.use(bodyParser.json());
 
-// 🔑 Variables de entorno (las pones en Render)
+// 🔑 Variables de entorno (configúralas en Render)
 const token = process.env.ACCESS_TOKEN;
 const verifyToken = process.env.VERIFY_TOKEN;
 const phoneNumberId = process.env.PHONE_NUMBER_ID;
 
-// ✅ Verificación del webhook
+// ✅ Verificación del Webhook (solo la primera vez)
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const challenge = req.query["hub.challenge"];
@@ -23,29 +23,37 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
-// 💬 Escucha y responde mensajes
+// 💬 Procesar mensajes entrantes
 app.post("/webhook", async (req, res) => {
   try {
     const data = req.body;
 
     if (data.object) {
       const message = data.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-      const from = message?.from;
-      const text = message?.text?.body;
+      if (!message) return res.sendStatus(200); // No hay mensaje nuevo
 
-      // Si el usuario escribe "menu", le mostramos los botones
+      const from = message.from; // Número del usuario
+      let text = message.text?.body;
+
+      // 👀 Log para depurar
+      console.log("📩 Mensaje recibido:", JSON.stringify(message, null, 2));
+
+      // 👉 Detectar botones o listas interactivas
+      if (message.type === "interactive") {
+        const interactive = message.interactive;
+        if (interactive.type === "button_reply") {
+          text = interactive.button_reply.title;
+        } else if (interactive.type === "list_reply") {
+          text = interactive.list_reply.title;
+        }
+      }
+
+      // 🧠 Lógica del bot
       if (text?.toLowerCase() === "menu") {
         await sendMenu(from);
-      }
-
-      // Si selecciona un botón
-      else if (message?.button?.text) {
-        const choice = message.button.text;
-        await handleMenuOption(from, choice);
-      }
-
-      // Si escribe algo diferente
-      else if (text) {
+      } else if (["💡 Información", "🕒 Horarios", "📞 Contacto"].includes(text)) {
+        await handleMenuOption(from, text);
+      } else if (text) {
         await sendTextMessage(from, "👋 ¡Hola! Escribe *menu* para ver las opciones.");
       }
     }
@@ -58,46 +66,63 @@ app.post("/webhook", async (req, res) => {
 
 // 🧠 Enviar mensaje de texto
 async function sendTextMessage(to, body) {
-  await axios.post(
-    `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      text: { body },
-    },
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        text: { body },
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+  } catch (err) {
+    console.error("❌ Error enviando mensaje:", err.response?.data || err.message);
+  }
 }
 
 // 📋 Enviar menú con botones
 async function sendMenu(to) {
-  await axios.post(
-    `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: "📋 *Menú principal*\nSelecciona una opción:" },
-        action: {
-          buttons: [
-            { type: "reply", reply: { id: "1", title: "💡 Información" } },
-            { type: "reply", reply: { id: "2", title: "🕒 Horarios" } },
-            { type: "reply", reply: { id: "3", title: "📞 Contacto" } },
-          ],
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: {
+            text: "📋 *Menú principal*\nSelecciona una opción:",
+          },
+          action: {
+            buttons: [
+              { type: "reply", reply: { id: "1", title: "💡 Información" } },
+              { type: "reply", reply: { id: "2", title: "🕒 Horarios" } },
+              { type: "reply", reply: { id: "3", title: "📞 Contacto" } },
+            ],
+          },
         },
       },
-    },
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+  } catch (err) {
+    console.error("❌ Error enviando menú:", err.response?.data || err.message);
+  }
 }
 
 // ⚙️ Lógica de respuestas del menú
 async function handleMenuOption(to, option) {
   switch (option) {
     case "💡 Información":
-      await sendTextMessage(to, "Somos un bot de prueba para WhatsApp API 😎\nPuedes pedirme horarios o contacto.");
+      await sendTextMessage(
+        to,
+        "Somos un bot de prueba para WhatsApp API 😎\nPuedes pedirme horarios o contacto."
+      );
       break;
 
     case "🕒 Horarios":
@@ -109,8 +134,10 @@ async function handleMenuOption(to, option) {
       break;
 
     default:
-      await sendTextMessage(to, "No entiendo esa opción 😅 Escribe *menu* para ver las opciones nuevamente.");
+      await sendTextMessage(to, "😅 No entiendo esa opción. Escribe *menu* para ver las opciones nuevamente.");
   }
 }
 
-app.listen(10000, () => console.log("🚀 Bot activo en puerto 10000"));
+// 🚀 Iniciar servidor
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Bot activo en puerto ${PORT}`));
